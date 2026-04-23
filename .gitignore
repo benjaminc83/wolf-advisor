@@ -1,0 +1,19 @@
+# Secrets — ne jamais committer
+.dev.vars
+.env
+.env.local
+.env.*.local
+
+# Node / wrangler
+node_modules/
+.wrangler/
+.mf/
+dist/
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Mémoire interne Claude Code (déjà local)
+.claude/

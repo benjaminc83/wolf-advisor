@@ -1,0 +1,27 @@
+name = "wolf-advisor83"
+main = "worker.js"
+compatibility_date = "2025-10-01"
+
+# ─── Cron trigger : scan toutes les 5 min ───
+# Le Worker filtre lui-même les heures de marché (isMarketTradingTime)
+# donc on peut laisser le cron tourner en continu, il ne fait rien hors bourse.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# ─── KV namespace — stockage des signaux, alertes, cache ───
+# Récupère l'ID dans CF Dashboard → Workers & Pages → KV → ton namespace "7a13d4dab7bb45318406c71f4394f9d6"
+# puis remplace "REPLACE_WITH_KV_NAMESPACE_ID" ci-dessous.
+# (L'ID est un hash hex de 32 caractères, pas un nom lisible.)
+[[kv_namespaces]]
+binding = "WOLF_DATA"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# ─── Observabilité : logs accessibles via `wrangler tail` ───
+[observability]
+enabled = true
+
+# ─── Secrets (NE PAS mettre ici) ───
+# DISCORD_WEBHOOK et WOLF_TOKEN se configurent via la commande :
+#   wrangler secret put DISCORD_WEBHOOK
+#   wrangler secret put WOLF_TOKEN
+# ou dans le Dashboard → Settings → Variables → Environment Variables (Encrypted).
