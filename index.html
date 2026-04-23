@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Wolf Advisor v10 — PEA Fortuneo</title>
+<title>Wolf Advisor v10.1 — PEA Fortuneo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -125,7 +125,7 @@ button:active{transform:scale(.98);}
 <div class="hdr">
   <div class="avatar">🐺</div>
   <div style="flex:1;">
-    <div style="font-size:15px;font-weight:500;">Wolf Advisor <span style="font-size:11px;color:var(--text-tertiary);font-weight:400;">v10</span><span class="live-tag" id="live-tag">LIVE</span></div>
+    <div style="font-size:15px;font-weight:500;">Wolf Advisor <span style="font-size:11px;color:var(--text-tertiary);font-weight:400;">v10.1</span><span class="live-tag" id="live-tag">LIVE</span></div>
     <div style="font-size:11px;color:var(--text-secondary);margin-top:1px;"><span class="dot open" id="market-dot"></span><span id="market-status-line">Chargement...</span></div>
   </div>
   <div style="display:flex;gap:6px;">
@@ -165,14 +165,13 @@ button:active{transform:scale(.98);}
   <button class="tab" data-tab="orders">Ordres</button>
   <button class="tab" data-tab="perf">Perf.</button>
   <button class="tab" data-tab="stress">Stress</button>
-  <button class="tab" data-tab="wolf">Wolf IA</button>
 </div>
 
 <!-- BRIEFING -->
 <div id="tab-briefing" class="tab-content active">
   <div style="background:var(--bg-secondary);border-left:3px solid var(--blue);border-radius:var(--radius-lg);padding:1rem 1.25rem;margin-bottom:10px;">
     <div style="font-size:11px;color:var(--blue);font-weight:500;margin-bottom:6px;">Briefing Wolf · <span id="briefing-date"></span></div>
-    <div id="briefing-content" style="font-size:13px;color:var(--text-tertiary);font-style:italic;">Clique sur "Briefing du jour" dans Wolf IA →</div>
+    <div id="briefing-content" style="font-size:13px;color:var(--text-tertiary);font-style:italic;">Briefing auto basé sur les actus du jour, le scan Worker, et tes positions ouvertes.</div>
   </div>
   <div id="worker-status" style="font-size:11px;color:var(--text-tertiary);padding:8px 12px;background:var(--bg-secondary);border-radius:var(--radius-md);margin-bottom:10px;display:none;line-height:1.6;"></div>
   <div style="font-size:11px;color:var(--text-tertiary);font-weight:500;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;">Flash actus — impact marché</div>
@@ -461,7 +460,6 @@ button:active{transform:scale(.98);}
     <div id="concentration-warning" style="display:none;margin-top:6px;padding:7px 10px;background:var(--bg-red);border-radius:var(--radius-md);font-size:12px;color:var(--red);"></div>
     <div style="display:flex;gap:8px;margin-top:10px;">
       <button id="ord-submit" style="flex:1;">Enregistrer ↗</button>
-      <button id="ord-analyze" style="flex:1;">Avis de Wolf ↗</button>
     </div>
   </div>
   <div class="grid3" style="margin-bottom:10px;">
@@ -523,23 +521,6 @@ button:active{transform:scale(.98);}
 </div>
 
 <!-- WOLF IA -->
-<div id="tab-wolf" class="tab-content">
-  <div class="qbtns">
-    <button class="qbtn" onclick="askWolf('Génère mon briefing quotidien PEA pour aujourd\'hui en tenant compte des dernières actualités géopolitiques')">Briefing du jour</button>
-    <button class="qbtn" onclick="askWolf('Quel est le meilleur dip à acheter maintenant sur mon PEA ?')">Meilleur dip</button>
-    <button class="qbtn" onclick="askWolf('Analyse l\'impact des tensions tarifaires US-UE sur mon PEA en ce moment')">Guerre tarifaire</button>
-    <button class="qbtn" onclick="askWolf('Quand vendre pour maximiser mon gain net de frais Fortuneo Starter ?')">Signal sortie</button>
-    <button class="qbtn" onclick="askWolf('Analyse mon portefeuille actuel et donne-moi tes recommandations précises')">Analyse portef.</button>
-  </div>
-  <div class="chat-area" id="chat-area">
-    <div class="mw"><div class="wm">🐺</div><div class="b">Wolf v10 — temps réel via Worker Cloudflare, RSI/Vol/VIX réels, scan mutualisé + fallback Stooq, filtre volume, alertes étendues. Trades opportunistes ≥600€ avec frais payés, objectif +6% net. Commence par le briefing du jour.</div></div>
-  </div>
-  <div class="input-row">
-    <input type="text" id="wolf-input" placeholder="Pose ta question à Wolf..." />
-    <button id="wolf-send">Envoyer ↗</button>
-  </div>
-</div>
-
 <div class="disclaimer">Wolf Advisor est un outil d'aide à la décision. Les analyses ne constituent pas un conseil en investissement au sens de la réglementation AMF. Investir comporte des risques de perte en capital.</div>
 </div>
 </div>
@@ -1623,8 +1604,6 @@ function closeOrder(id){
   cashAvailable+=closeAmt-closeFee;
   save();renderOrders();renderPortfolioSummary();updatePortfolioHeader();
   showNotif(`Clôture : ${fmtEur(net)} · Espèces : ${fmt(cashAvailable)}€`);
-  askWolf(`Clôture ${o.name} (${o.isin||o.sym}) : achat ${o.price}€ → vente ${cp}€ · ${o.qty} titre(s) · P&L net : ${fmtEur(net)}. Analyse et conseille pour la suite.`);
-  document.querySelectorAll('.tab').forEach(b=>{if(b.dataset.tab==='wolf')b.click();});
 }
 
 function renderOrders(){
@@ -1731,63 +1710,7 @@ document.getElementById('stress-run').addEventListener('click',()=>{
   });
   html+=`<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:500;padding:8px 0 0;border-top:0.5px solid var(--border-light);margin-top:4px;"><span>Impact total</span><span style="color:${total>=0?'#27500A':'#A32D2D'};">${fmtEur(total)}</span></div></div>`;
   document.getElementById('stress-result').innerHTML=html;
-  askWolf(`Stress test "${s?s.label:'personnalisé'}". Positions : ${allPos.map(o=>`${o.name} à ${o.price||o.prm}€`).join(', ')}. Impact simulé : ${fmtEur(total)}. Que faire pour protéger mon portefeuille ?`);
-  document.querySelectorAll('.tab').forEach(b=>{if(b.dataset.tab==='wolf')b.click();});
 });
-
-// WOLF IA — utilise l'API Anthropic correctement
-const WOLF_SYS=`Tu es Wolf, trader expert 20 ans marchés européens et PEA. Stratégie : buy the dip, sell before next drop. Fortuneo Starter : l'ordre gratuit ≤500€/mois est RÉSERVÉ au DCA mensuel ETF (NE PAS le compter pour les trades). Trades opportunistes : tickets ≥600€, frais 0,35% à l'achat ET à la vente toujours payés. Position sizing dynamique : 20% max du PEA par trade, plafond 1500€ tant que le capital est faible. Réinvestissement systématique des gains pour effet boule de neige (intérêts composés). Objectif minimum : +6% NET après frais aller-retour. Horizon : 1 semaine à 3 mois. Capital PEA <5000€ — discipline cruciale. Euronext Paris : lundi–vendredi 9h00–17h30. Intègre toujours le contexte géopolitique actuel (guerre tarifaire US-UE, BCE accommodante, demande Chine). Concis, niveaux de prix concrets, calcule toujours le seuil de revente nécessaire pour atteindre +6% net (≈ +6,7% brut). Rappelle brièvement que ce n'est pas un conseil réglementé AMF.`;
-
-function addMsg(role,text){
-  const area=document.getElementById('chat-area');
-  const d=document.createElement('div');
-  if(role==='wolf'){d.className='mw';d.innerHTML=`<div class="wm">🐺</div><div class="b">${text}</div>`;}
-  else{d.className='mu';d.innerHTML=`<div class="b">${text}</div>`;}
-  area.appendChild(d);area.scrollTop=area.scrollHeight;
-}
-
-async function askWolf(q){
-  if(isLoading)return;isLoading=true;document.getElementById('wolf-send').disabled=true;
-  if(!q.includes('[contexte]'))addMsg('user',q);
-  const ld=document.createElement('div');ld.className='mw';ld.id='ld';
-  ld.innerHTML=`<div class="wm">🐺</div><div class="b" style="color:var(--text-tertiary);">Wolf analyse...</div>`;
-  document.getElementById('chat-area').appendChild(ld);document.getElementById('chat-area').scrollTop=99999;
-
-  // Contexte enrichi avec les news
-  const newsCtx=cachedNews.slice(0,3).map(n=>`${n.impact==='neg'?'⚠':'✓'} ${n.title}`).join('\n')||'Pas de news chargées';
-  const open=orders.filter(o=>o.status==='open').map(o=>`${o.name} à ${o.price}€`).join(', ')||'aucune';
-  const posStr=positions.map(p=>{const d=liveData[p.sym];const cp=d?d.price:p.prm;return`${p.name}:PRU${p.prm}€,cours${fmt(cp)}€,PnL${fmtEur((cp-p.prm)*p.qty)}`;}).join('|')||'non renseigné';
-  const mkt=getMarketStatus();
-  const fullCtx=`[Marché:${mkt.status}|Espèces:${cashAvailable}€|Positions:${open}|Portefeuille:${posStr}]\nActualités récentes:\n${newsCtx}`;
-
-  chatHistory.push({role:'user',content:fullCtx+'\n\nQuestion: '+q});
-
-  try{
-    const r=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,system:WOLF_SYS,messages:chatHistory})
-    });
-    if(!r.ok){const err=await r.text();throw new Error(err);}
-    const data=await r.json();
-    const reply=data.content?.map(b=>b.text||'').join('')||'Erreur de réponse.';
-    document.getElementById('ld')?.remove();addMsg('wolf',reply);
-    chatHistory.push({role:'assistant',content:reply});
-    if(q.toLowerCase().includes('briefing')){
-      const bc=document.getElementById('briefing-content');
-      bc.style.fontStyle='normal';bc.style.color='var(--text-primary)';bc.style.lineHeight='1.7';bc.textContent=reply;
-    }
-  }catch(e){
-    document.getElementById('ld')?.remove();
-    const errMsg=e.message||'';
-    if(errMsg.includes('401')||errMsg.includes('API')){
-      addMsg('wolf','Wolf IA nécessite une clé API Anthropic. Depuis GitHub Pages, ajoute ?apikey=ta-clé dans l\'URL, ou utilise un proxy. Pour l\'instant, consulte l\'onglet Actus pour les analyses géopolitiques.');
-    }else{
-      addMsg('wolf','Connexion temporairement indisponible. Vérifie ta connexion et réessaie.');
-    }
-  }
-  isLoading=false;document.getElementById('wolf-send').disabled=false;
-}
 
 // TABS
 document.querySelectorAll('.tab').forEach(btn=>{
@@ -1802,16 +1725,6 @@ document.querySelectorAll('.tab').forEach(btn=>{
 });
 
 document.getElementById('ord-submit').addEventListener('click',submitOrder);
-document.getElementById('ord-analyze').addEventListener('click',()=>{
-  if(!selectedAsset){alert('Sélectionne un instrument');return;}
-  const qty=document.getElementById('ord-qty').value,price=document.getElementById('ord-price').value;
-  if(!price){alert('Entre un prix');return;}
-  const amount=parseFloat(qty)*parseFloat(price),n=getNextOrderNum(),fee=fortuneoFee(amount,n);
-  askWolf(`Ordre envisagé : ${selectedAsset.name} (${selectedAsset.isin}) · ${qty} titre(s) à ${price}€ · ${fmt(amount)}€ · Frais : ${fee===0?'0€ gratuit':fmt(fee)+'€'} · Espèces : ${fmt(cashAvailable)}€ · Marché : ${getMarketStatus().label}. Bon timing compte tenu des actualités récentes ?`);
-  document.querySelectorAll('.tab').forEach(b=>{if(b.dataset.tab==='wolf')b.click();});
-});
-document.getElementById('wolf-send').addEventListener('click',()=>{const q=document.getElementById('wolf-input').value.trim();if(q){document.getElementById('wolf-input').value='';askWolf(q);}});
-document.getElementById('wolf-input').addEventListener('keydown',e=>{if(e.key==='Enter'){const q=e.target.value.trim();if(q){e.target.value='';askWolf(q);}}});
 document.getElementById('refresh-btn').addEventListener('click',()=>{loadLiveData();fetchNews();});
 
 // INIT — appel immédiat pour éviter le "Vérification..."
