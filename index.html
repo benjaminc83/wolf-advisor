@@ -200,11 +200,12 @@ button:active{transform:scale(.98);}
 <div id="tab-signals" class="tab-content">
   <div style="background:var(--bg-secondary);border-radius:var(--radius-lg);padding:12px 14px;margin-bottom:12px;">
     <div style="font-size:13px;font-weight:500;margin-bottom:4px;">Suivi des signaux Wolf — si tu avais suivi</div>
-    <div style="font-size:12px;color:var(--text-secondary);line-height:1.6;">Chaque DIP ACHAT est enregistré automatiquement avec le prix du moment. Seuil objectif : <b style="font-weight:500;color:var(--c-green);">+4% net de frais minimum.</b></div>
+    <div style="font-size:12px;color:var(--text-secondary);line-height:1.6;">Chaque DIP ACHAT est enregistré automatiquement avec le prix du moment. Seuil objectif : <b style="font-weight:500;color:var(--c-green);">+6% net de frais minimum.</b></div>
   </div>
+  <div id="signals-last-scan" style="font-size:11px;color:var(--text-tertiary);margin-bottom:10px;"></div>
   <div class="grid4" style="margin-bottom:12px;">
     <div class="metric"><div class="metric-label">Signaux émis</div><div class="metric-val" id="sig-total">0</div></div>
-    <div class="metric"><div class="metric-label">&gt; +4% net</div><div class="metric-val" id="sig-hit" style="color:var(--c-green);">0</div></div>
+    <div class="metric"><div class="metric-label">&gt; +6% net</div><div class="metric-val" id="sig-hit" style="color:var(--c-green);">0</div></div>
     <div class="metric"><div class="metric-label">Taux réussite</div><div class="metric-val" id="sig-rate">—</div></div>
     <div class="metric"><div class="metric-label">Gain moy. net</div><div class="metric-val" id="sig-avg">—</div></div>
   </div>
@@ -2176,12 +2177,21 @@ async function workerGetState(){
   }catch(e){return{error:'net',msg:'inaccessible'};}
 }
 
+function renderLastScan(ls){
+  const el=document.getElementById('signals-last-scan');if(!el)return;
+  if(!ls||!ls.startedAt){el.innerHTML='';return;}
+  const diffMin=Math.max(0,Math.round((Date.now()-new Date(ls.startedAt).getTime())/60000));
+  const ago=diffMin<1?'à l\'instant':diffMin<60?'il y a '+diffMin+' min':'il y a '+Math.round(diffMin/60)+'h';
+  const dot=ls.status==='ok'?'<span style="color:var(--c-green);">●</span>':ls.status==='skipped'?'<span style="color:var(--text-tertiary);">●</span>':'<span style="color:var(--c-red);">●</span>';
+  el.innerHTML=dot+' Dernier scan '+ago;
+}
 function renderWorkerState(s){
   const el=document.getElementById('worker-status');if(!el)return;
-  if(!WOLF_WORKER){el.style.display='none';return;}
+  if(!WOLF_WORKER){el.style.display='none';renderLastScan(null);return;}
   el.style.display='block';
-  if(!s||s.error){el.innerHTML='<span style="color:var(--c-red);">●</span> Worker : '+(s?s.msg:'non configuré');return;}
+  if(!s||s.error){el.innerHTML='<span style="color:var(--c-red);">●</span> Worker : '+(s?s.msg:'non configuré');renderLastScan(null);return;}
   const ls=s.last_scan;
+  renderLastScan(ls);
   if(!ls){el.innerHTML='<span style="color:var(--text-tertiary);">●</span> Worker en attente (aucun scan)';return;}
   const t=new Date(ls.startedAt);
   const time=t.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
