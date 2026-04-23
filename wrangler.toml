@@ -1,4 +1,4 @@
-name = "wolf-advisor83"
+name = "sparkling-king-842b"
 main = "worker.js"
 compatibility_date = "2025-10-01"
 
@@ -9,12 +9,11 @@ compatibility_date = "2025-10-01"
 crons = ["*/5 * * * *"]
 
 # ─── KV namespace — stockage des signaux, alertes, cache ───
-# Récupère l'ID dans CF Dashboard → Workers & Pages → KV → ton namespace "7a13d4dab7bb45318406c71f4394f9d6"
-# puis remplace "REPLACE_WITH_KV_NAMESPACE_ID" ci-dessous.
-# (L'ID est un hash hex de 32 caractères, pas un nom lisible.)
+# Le binding `WOLF_DATA` est utilisé dans worker.js (env.WOLF_DATA).
+# L'ID ci-dessous correspond au namespace existant sur Cloudflare.
 [[kv_namespaces]]
 binding = "WOLF_DATA"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "7a13d4dab7bb45318406c71f4394f9d6"
 
 # ─── Observabilité : logs accessibles via `wrangler tail` ───
 [observability]
