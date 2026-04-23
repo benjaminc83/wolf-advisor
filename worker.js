@@ -65,10 +65,9 @@ const SCAN_PARAMS = {
   TRADE_TICKET:    600,
   STARTER_PCT:     0.0035,
   CRASH_THRESHOLD: -2,
-  // Ratio volume jour / moyenne 20j minimum pour valider un dip.
-  // 1.0 = volume au moins égal à la moyenne (dip "convaincant").
-  // Mettre 0 pour désactiver le filtre.
   MIN_VOL_RATIO:   1.0,
+  STOP_LOSS_PCT:   -3,
+  TREND_REJECT_BELOW_MA200: true,
 };
 
 const RSS_SOURCES = {
@@ -165,6 +164,20 @@ export default {
         const result = await runScan(env, ctx);
         return jsonResponse({ ok: true, scan: result });
       }
+      // Lance un backtest 5 ans pour un symbole donné et stocke les seuils
+      // optimaux (min_score, min_chg) en KV. Auth requis car coût CPU/bande.
+      if (path === '/backtest') {
+        if (!checkAuth(request, env)) return errorResponse(403, 'Token invalide');
+        const sym = url.searchParams.get('sym');
+        if (!sym) return errorResponse(400, 'Param sym requis');
+        const result = await backtestSymbol(env, sym);
+        return jsonResponse(result);
+      }
+      // Liste toutes les calibrations connues. Public car non sensible.
+      if (path === '/calibrations') {
+        const all = await getAllCalibrations(env);
+        return jsonResponse({ ok: true, count: Object.keys(all).length, calibrations: all });
+      }
       // ── Routes alertes côté Worker (priorité 2) ─────────────
       if (path === '/alerts') {
         if (!checkAuth(request, env)) return errorResponse(403, 'Token invalide');
@@ -201,6 +214,7 @@ async function runScan(env, ctx) {
     status: 'pending',
     scanned: 0, errors: 0, new_signals: 0,
     low_volume_skipped: 0, stooq_fallback: 0,
+    trend_rejected: 0, calibrated_used: 0, macro_skip: false,
     skipped_reason: null,
   };
 
@@ -225,6 +239,12 @@ async function runScan(env, ctx) {
     }
     log.cac_chg = cacData ? round(cacData.chgPct, 2) : null;
 
+    // Pré-chargement des calibrations par instrument (backtest) et du calendrier macro.
+    const calibrations = await getAllCalibrations(env);
+    const macroEvents = await fetchMacroEvents(env);
+    const macroSkip = hasHighImpactEventSoon(macroEvents);
+    log.macro_skip = macroSkip;
+
     const signals = await getSignals(env);
     const newSignals = [];
 
@@ -243,10 +263,22 @@ async function runScan(env, ctx) {
         const volumes = data.volumes || [];
         const rsi = calcRSI(closes, 14);
         const vol = calcVol(closes, 20);
-        const score = computeWolfScore(chg, rsi, vol);
+        const trend = calcTrend(closes);
+        const score = computeWolfScore(chg, rsi, vol, trend.bias);
 
-        if (score < SCAN_PARAMS.MIN_SCORE) continue;
-        if (chg > SCAN_PARAMS.MIN_CHG_PCT) continue;
+        // Seuils par instrument : override SCAN_PARAMS.MIN_SCORE / MIN_CHG_PCT si
+        // une calibration existe pour ce symbole (issue du backtest 5 ans).
+        const calib = calibrations[symbol] || null;
+        const minScore = calib && calib.min_score ? calib.min_score : SCAN_PARAMS.MIN_SCORE;
+        const minChg = calib && calib.min_chg != null ? calib.min_chg : SCAN_PARAMS.MIN_CHG_PCT;
+        if (calib) log.calibrated_used++;
+
+        if (SCAN_PARAMS.TREND_REJECT_BELOW_MA200 && trend.bearish) {
+          log.trend_rejected++;
+          continue;
+        }
+        if (score < minScore) continue;
+        if (chg > minChg) continue;
         if (vol !== null && vol > SCAN_PARAMS.MAX_VOL) continue;
 
         // Filtre volume : un dip sans volume = piège (vente en faible conviction).
@@ -280,6 +312,10 @@ async function runScan(env, ctx) {
           vol: vol !== null ? round(vol, 2) : null,
           volRatio: volRatio !== null ? round(volRatio, 2) : null,
           chgAtEmission: round(chg, 2),
+          ma50: trend.ma50,
+          ma200: trend.ma200,
+          trendBias: trend.bias,
+          calibrated: !!calib,
           ticket: SCAN_PARAMS.TRADE_TICKET,
           status: 'pending',
           currentPrice: round(data.price, 2),
@@ -289,6 +325,7 @@ async function runScan(env, ctx) {
           netPnl: null,
           dataSource: data.source || 'yahoo',
           source: 'worker_cron',
+          macroDelayed: macroSkip,
         };
         signals.unshift(sig);
         newSignals.push(sig);
@@ -305,8 +342,13 @@ async function runScan(env, ctx) {
     autoCloseExpiredSignals(signals);
     await saveSignals(env, signals);
 
-    for (const sig of newSignals) {
-      await sendDiscordSignal(env, sig);
+    // Si un événement macro High impact est imminent (<24h), on garde les signaux
+    // en base mais on n'envoie pas de notif pour ne pas déclencher un achat la veille
+    // d'une BCE/Fed/NFP/CPI. Ils apparaissent dans le front avec macroDelayed = true.
+    if (!macroSkip) {
+      for (const sig of newSignals) {
+        await sendDiscordSignal(env, sig);
+      }
     }
     // Envoi des alertes P&L après les signaux (pour ne pas spammer)
     for (const alert of pnlAlerts) {
@@ -364,7 +406,7 @@ function calcVol(closes, period = 20) {
   return Math.sqrt(variance) * 100;
 }
 
-function computeWolfScore(chgPct, rsi, vol) {
+function computeWolfScore(chgPct, rsi, vol, trendBias = 0) {
   let score = 0;
   if (chgPct < -4) score += 35;
   else if (chgPct < -2.5) score += 25;
@@ -378,7 +420,31 @@ function computeWolfScore(chgPct, rsi, vol) {
     else if (vol > 2.5) score -= 15;
     else if (vol > 1.5) score -= 5;
   }
+  if (trendBias > 0) score += 10;
+  else if (trendBias < 0) score -= 20;
   return Math.max(0, Math.min(100, score));
+}
+
+function calcMA(closes, period) {
+  if (!closes || closes.length < period) return null;
+  const slice = closes.slice(-period);
+  let sum = 0;
+  for (const c of slice) sum += c;
+  return sum / period;
+}
+
+function calcTrend(closes) {
+  const price = closes && closes.length ? closes[closes.length - 1] : null;
+  const ma50 = calcMA(closes, 50);
+  const ma200 = calcMA(closes, 200);
+  if (price == null || ma50 == null || ma200 == null) {
+    return { ma50, ma200, bias: 0, bearish: false };
+  }
+  let bias = 0;
+  if (price > ma50 && ma50 > ma200) bias = 1;
+  else if (price < ma50 && ma50 < ma200) bias = -1;
+  const bearish = price < ma200;
+  return { ma50: round(ma50, 2), ma200: round(ma200, 2), bias, bearish };
 }
 
 function autoCloseExpiredSignals(signals) {
@@ -461,6 +527,33 @@ async function updateSignalsPnL(env, signals, scanCache = null) {
           break; // un seul palier par scan
         }
       }
+
+      // Sortie auto : cible confirmée (+6% atteint ET maintenu depuis au moins 1 scan)
+      // → reco "VENDRE" ; ou stop-loss (-3% net) → reco "COUPER".
+      // On ne déclenche qu'une fois par signal (exitSignalFired).
+      if (!sig.exitSignalFired) {
+        if (netPct >= target && sig.peakPct >= target) {
+          sig.exitSignalFired = 'target';
+          alerts.push({
+            emoji: '🎯', label: 'VENDRE', kind: 'exit_target',
+            sym: sig.sym, name: sig.name || sig.sym,
+            netPct: round(netPct, 2), target,
+            buyPrice, currentPrice: round(currentPrice, 2),
+            peakPct: sig.peakPct,
+            ageDays: Math.round((Date.now() - sig.emittedAt) / 86400000),
+          });
+        } else if (netPct <= SCAN_PARAMS.STOP_LOSS_PCT) {
+          sig.exitSignalFired = 'stop';
+          alerts.push({
+            emoji: '🛑', label: 'STOP', kind: 'exit_stop',
+            sym: sig.sym, name: sig.name || sig.sym,
+            netPct: round(netPct, 2), target: SCAN_PARAMS.STOP_LOSS_PCT,
+            buyPrice, currentPrice: round(currentPrice, 2),
+            peakPct: sig.peakPct,
+            ageDays: Math.round((Date.now() - sig.emittedAt) / 86400000),
+          });
+        }
+      }
     } catch (e) {
       // Erreur sur un signal individuel, on continue les autres
     }
@@ -471,8 +564,16 @@ async function updateSignalsPnL(env, signals, scanCache = null) {
 async function sendDiscordPnLAlert(env, alert) {
   const webhook = env.DISCORD_WEBHOOK;
   if (!webhook) return;
+  let header;
+  if (alert.kind === 'exit_target') {
+    header = `${alert.emoji} **${alert.label} — objectif atteint** · ${alert.name}`;
+  } else if (alert.kind === 'exit_stop') {
+    header = `${alert.emoji} **${alert.label} — stop-loss** · ${alert.name}`;
+  } else {
+    header = `${alert.emoji} **Signal Wolf — ${alert.label} objectif** · ${alert.name}`;
+  }
   const content = [
-    `${alert.emoji} **Signal Wolf — ${alert.label} objectif** · ${alert.name}`,
+    header,
     `Perf. nette : **${alert.netPct >= 0 ? '+' : ''}${alert.netPct}%** / +${alert.target}%`,
     `Cours : ${alert.buyPrice}€ → ${alert.currentPrice}€ · Peak : +${alert.peakPct || alert.netPct}%`,
     `⏱ ${alert.ageDays}j depuis le signal`,
@@ -592,7 +693,7 @@ async function fetchYahooForScan(env, symbol, scanCache = null) {
 }
 
 async function tryFetchYahoo(symbol) {
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=3mo`;
+  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y`;
   let attempts = 0;
   while (attempts < 2) {
     try {
@@ -684,6 +785,215 @@ function calcAvgVolume(volumes, period = 20) {
     if (v && v > 0) { sum += v; n++; }
   }
   return n > 0 ? sum / n : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// CALENDRIER MACRO — ForexFactory (gratuit, XML)
+// ───────────────────────────────────────────────────────────────────────
+// Évite de notifier un nouveau dip la veille d'un événement High impact
+// EUR/USD (BCE, Fed, NFP, CPI). Source : feed hebdomadaire FF, cache 6h.
+// ═══════════════════════════════════════════════════════════════════════
+async function fetchMacroEvents(env) {
+  try {
+    const cached = await env.WOLF_DATA.get('macro_events', 'json');
+    if (cached && Date.now() - cached.fetchedAt < 6 * 3600 * 1000) {
+      return cached.events || [];
+    }
+  } catch (e) {}
+  try {
+    const r = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.xml', { headers: FETCH_HEADERS });
+    if (!r.ok) return [];
+    const xml = await r.text();
+    const events = parseFFCalendar(xml);
+    await env.WOLF_DATA.put('macro_events', JSON.stringify({ events, fetchedAt: Date.now() }), {
+      expirationTtl: 8 * 3600,
+    }).catch(() => {});
+    return events;
+  } catch (e) { return []; }
+}
+
+function parseFFCalendar(xml) {
+  const events = [];
+  const itemRe = /<event>([\s\S]*?)<\/event>/g;
+  let m;
+  while ((m = itemRe.exec(xml)) !== null) {
+    const item = m[1];
+    const pick = (tag) => {
+      const r = new RegExp(`<${tag}><!\\[CDATA\\[(.*?)\\]\\]></${tag}>|<${tag}>(.*?)</${tag}>`, 's');
+      const mm = r.exec(item);
+      return mm ? (mm[1] ?? mm[2] ?? '') : '';
+    };
+    const title = pick('title');
+    const country = pick('country');
+    const impact = pick('impact');
+    const date = pick('date');
+    const time = pick('time');
+    let ts = NaN;
+    if (date && time) {
+      ts = Date.parse(`${date} ${time} GMT-0500`); // FF publie en US Eastern ≈ EST
+    }
+    if (title && impact) events.push({ title, country, impact, ts });
+  }
+  return events;
+}
+
+function hasHighImpactEventSoon(events) {
+  if (!events || !events.length) return false;
+  const now = Date.now();
+  const in24h = now + 24 * 3600 * 1000;
+  return events.some(e =>
+    e.impact === 'High' &&
+    (e.country === 'EUR' || e.country === 'USD') &&
+    e.ts > now && e.ts < in24h
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// CALIBRATIONS — seuils optimaux par instrument (issus du backtest)
+// ───────────────────────────────────────────────────────────────────────
+// KV key: calibration:<symbol> = { min_score, min_chg, winrate, avg_gain,
+//   n_trades, ev, last_calibrated }
+// KV key: calibrations_index = [ "SYM1", "SYM2", ... ] (liste des symboles calibrés)
+// ═══════════════════════════════════════════════════════════════════════
+async function getAllCalibrations(env) {
+  try {
+    const idxRaw = await env.WOLF_DATA.get('calibrations_index');
+    if (!idxRaw) return {};
+    const idx = JSON.parse(idxRaw);
+    if (!Array.isArray(idx) || !idx.length) return {};
+    const out = {};
+    await Promise.all(idx.map(async (sym) => {
+      try {
+        const c = await env.WOLF_DATA.get('calibration:' + sym, 'json');
+        if (c) out[sym] = c;
+      } catch (e) {}
+    }));
+    return out;
+  } catch (e) { return {}; }
+}
+
+async function saveCalibration(env, symbol, calib) {
+  await env.WOLF_DATA.put('calibration:' + symbol, JSON.stringify(calib));
+  try {
+    const idxRaw = await env.WOLF_DATA.get('calibrations_index');
+    const idx = idxRaw ? JSON.parse(idxRaw) : [];
+    if (!idx.includes(symbol)) {
+      idx.push(symbol);
+      await env.WOLF_DATA.put('calibrations_index', JSON.stringify(idx));
+    }
+  } catch (e) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// BACKTEST 5 ANS — simule la stratégie Wolf sur l'historique d'un symbole
+// ───────────────────────────────────────────────────────────────────────
+// Fetch Stooq (CSV complet, gratuit), découpe les 5 dernières années,
+// teste 3 combinaisons de seuils (score, chg) et retient celle avec la
+// meilleure espérance de gain (EV) nette. Stocke le résultat dans KV.
+// ═══════════════════════════════════════════════════════════════════════
+async function backtestSymbol(env, symbol) {
+  const stooqSym = mapToStooq(symbol);
+  if (!stooqSym) return { ok: false, reason: 'no_stooq_mapping' };
+
+  // Fetch historique complet Stooq (CSV).
+  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(stooqSym)}&i=d`;
+  const r = await fetch(url, { headers: FETCH_HEADERS });
+  if (!r.ok) return { ok: false, reason: 'stooq_http_' + r.status };
+  const csv = await r.text();
+  const lines = csv.trim().split(/\r?\n/);
+  if (lines.length < 300 || !/^date,/i.test(lines[0])) return { ok: false, reason: 'stooq_empty' };
+
+  const closes = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(',');
+    const c = parseFloat(parts[4]);
+    if (!isNaN(c)) closes.push(c);
+  }
+  if (closes.length < 260) return { ok: false, reason: 'insufficient_history' };
+
+  // On ne backteste que les 5 dernières années (~1260 jours) pour rester pertinent.
+  const series = closes.slice(-1260);
+  const target = SCAN_PARAMS.MIN_NET_PERF;        // +6%
+  const targetGross = target + 100 * SCAN_PARAMS.STARTER_PCT * 2; // seuil brut ≈ +6.7%
+  const maxHoldDays = SCAN_PARAMS.SIGNAL_LIFE_DAYS;
+  const stopPct = SCAN_PARAMS.STOP_LOSS_PCT;      // -3%
+
+  const combos = [
+    { min_score: 60, min_chg: -1.5 },
+    { min_score: 65, min_chg: -2.0 },
+    { min_score: 70, min_chg: -2.5 },
+  ];
+
+  const results = [];
+  for (const combo of combos) {
+    let trades = 0, wins = 0, losses = 0;
+    let sumGain = 0, sumLoss = 0;
+    let lastEntryIdx = -999;
+    const dedupBars = SCAN_PARAMS.DEDUP_DAYS;
+
+    for (let i = 200; i < series.length - 1; i++) {
+      if (i - lastEntryIdx < dedupBars) continue;
+      const sub = series.slice(0, i + 1);
+      const chg = sub.length >= 2 ? ((sub[i] - sub[i - 1]) / sub[i - 1]) * 100 : 0;
+      if (chg > combo.min_chg) continue;
+      const rsi = calcRSI(sub, 14);
+      const vol = calcVol(sub, 20);
+      if (vol !== null && vol > SCAN_PARAMS.MAX_VOL) continue;
+      const trend = calcTrend(sub);
+      if (SCAN_PARAMS.TREND_REJECT_BELOW_MA200 && trend.bearish) continue;
+      const score = computeWolfScore(chg, rsi, vol, trend.bias);
+      if (score < combo.min_score) continue;
+
+      // Entrée simulée : simuler sortie en avançant jusqu'à cible ou stop ou expiration.
+      const buy = sub[i];
+      lastEntryIdx = i;
+      trades++;
+      let closed = false;
+      const end = Math.min(i + maxHoldDays, series.length - 1);
+      for (let j = i + 1; j <= end; j++) {
+        const pct = ((series[j] - buy) / buy) * 100;
+        if (pct >= targetGross) {
+          wins++; sumGain += target; closed = true; break;
+        }
+        if (pct <= stopPct) {
+          losses++; sumLoss += stopPct; closed = true; break;
+        }
+      }
+      if (!closed) {
+        const finalPct = ((series[end] - buy) / buy) * 100 - 100 * SCAN_PARAMS.STARTER_PCT * 2;
+        if (finalPct >= 0) { wins++; sumGain += finalPct; }
+        else { losses++; sumLoss += finalPct; }
+      }
+    }
+
+    const winrate = trades ? wins / trades : 0;
+    const avgGain = wins ? sumGain / wins : 0;
+    const avgLoss = losses ? sumLoss / losses : 0; // négatif
+    const ev = winrate * avgGain + (1 - winrate) * avgLoss;
+    results.push({ ...combo, trades, wins, losses, winrate: round(winrate * 100, 1), avg_gain: round(avgGain, 2), avg_loss: round(avgLoss, 2), ev: round(ev, 2) });
+  }
+
+  // Sélectionne la combinaison avec EV max, à condition d'avoir ≥10 trades sinon statistiquement non significatif.
+  const eligible = results.filter(r => r.trades >= 10);
+  if (!eligible.length) {
+    // Pas assez de données : pas de calibration, garde les defaults globaux.
+    return { ok: true, symbol, skipped: true, results };
+  }
+  eligible.sort((a, b) => b.ev - a.ev);
+  const best = eligible[0];
+
+  const calib = {
+    min_score: best.min_score,
+    min_chg: best.min_chg,
+    winrate: best.winrate,
+    avg_gain: best.avg_gain,
+    avg_loss: best.avg_loss,
+    n_trades: best.trades,
+    ev: best.ev,
+    last_calibrated: new Date().toISOString(),
+  };
+  await saveCalibration(env, symbol, calib);
+  return { ok: true, symbol, calib, all_combos: results };
 }
 
 // ═══════════════════════════════════════════════════════════════════════

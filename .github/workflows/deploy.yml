@@ -21,8 +21,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Show wrangler context
+        run: |
+          echo "--- wrangler.toml ---"
+          cat wrangler.toml
+          echo "--- worker.js head ---"
+          head -n 12 worker.js
+          echo "--- worker.js size ---"
+          wc -l worker.js
+
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
+        env:
+          WRANGLER_LOG: debug
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           wranglerVersion: '3.114.9'

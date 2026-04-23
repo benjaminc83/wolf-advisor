@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Wolf Advisor v10.1 — PEA Fortuneo</title>
+<title>Wolf Advisor v10.2 — PEA Fortuneo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -125,7 +125,7 @@ button:active{transform:scale(.98);}
 <div class="hdr">
   <div class="avatar">🐺</div>
   <div style="flex:1;">
-    <div style="font-size:15px;font-weight:500;">Wolf Advisor <span style="font-size:11px;color:var(--text-tertiary);font-weight:400;">v10.1</span><span class="live-tag" id="live-tag">LIVE</span></div>
+    <div style="font-size:15px;font-weight:500;">Wolf Advisor <span style="font-size:11px;color:var(--text-tertiary);font-weight:400;">v10.2</span><span class="live-tag" id="live-tag">LIVE</span></div>
     <div style="font-size:11px;color:var(--text-secondary);margin-top:1px;"><span class="dot open" id="market-dot"></span><span id="market-status-line">Chargement...</span></div>
   </div>
   <div style="display:flex;gap:6px;">
@@ -234,6 +234,19 @@ button:active{transform:scale(.98);}
   </div>
   <div id="backtest-result"></div>
   <div id="backtest-chart-wrap" style="display:none;" class="card"><div class="card-title">Évolution du capital simulé</div><div style="height:180px;"><canvas id="backtest-chart"></canvas></div></div>
+
+  <div class="card" style="margin-top:14px;">
+    <div class="card-title">Calibration automatique — 5 ans par instrument</div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;line-height:1.55;">
+      Le Worker simule la stratégie Wolf sur 5 ans d'historique Stooq pour chaque instrument de la watchlist, teste 3 jeux de seuils (score, dip), et retient celui avec la meilleure espérance de gain. Les seuils calibrés sont ensuite utilisés au scan réel à la place des valeurs globales.
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button id="calib-run-all" style="flex:1;">Lancer calibration complète ↗</button>
+      <button id="calib-refresh" style="flex:1;background:var(--bg-tertiary);color:var(--text-primary);">Rafraîchir</button>
+    </div>
+    <div id="calib-progress" style="margin-top:10px;font-size:11px;color:var(--text-tertiary);"></div>
+    <div id="calib-table" style="margin-top:10px;"></div>
+  </div>
 </div>
 
 <!-- CAPITAL -->
@@ -2164,6 +2177,61 @@ async function refreshWorkerState(){renderWorkerState(await workerGetState());}
 
 refreshWorkerState();
 setInterval(refreshWorkerState,60000);
+
+// ═══ CALIBRATIONS — tableau + lancement batch ═══
+async function fetchCalibrations(){
+  if(!WOLF_WORKER)return{};
+  try{
+    const r=await fetch(WOLF_WORKER.replace(/\/$/,'')+'/calibrations');
+    if(!r.ok)return{};
+    const j=await r.json();
+    return j.calibrations||{};
+  }catch(e){return{};}
+}
+function renderCalibrations(cal){
+  const el=document.getElementById('calib-table');if(!el)return;
+  const keys=Object.keys(cal);
+  if(!keys.length){el.innerHTML='<div style="font-size:12px;color:var(--text-tertiary);padding:8px;">Aucune calibration encore. Clique sur "Lancer calibration complète" (nécessite ton token).</div>';return;}
+  keys.sort((a,b)=>(cal[b].ev||0)-(cal[a].ev||0));
+  let h='<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:11px;"><thead><tr style="text-align:left;color:var(--text-tertiary);font-weight:500;"><th style="padding:4px 6px;">Instrument</th><th style="padding:4px 6px;">Seuil score</th><th style="padding:4px 6px;">Dip</th><th style="padding:4px 6px;">Winrate</th><th style="padding:4px 6px;">Trades</th><th style="padding:4px 6px;">EV</th></tr></thead><tbody>';
+  for(const k of keys){
+    const c=cal[k];
+    const evColor=c.ev>=1?'var(--c-green)':c.ev>=0?'var(--text-primary)':'var(--c-red)';
+    h+=`<tr style="border-top:0.5px solid var(--border-light);"><td style="padding:6px;font-weight:500;">${k}</td><td style="padding:6px;">${c.min_score}</td><td style="padding:6px;">${c.min_chg}%</td><td style="padding:6px;">${c.winrate}%</td><td style="padding:6px;">${c.n_trades}</td><td style="padding:6px;color:${evColor};font-weight:500;">${c.ev>=0?'+':''}${c.ev}</td></tr>`;
+  }
+  h+='</tbody></table></div>';
+  el.innerHTML=h;
+}
+async function runCalibrationAll(){
+  if(!wolfToken){alert('Configure ton token Wolf dans l\'onglet Alertes.');return;}
+  const prog=document.getElementById('calib-progress');
+  const btn=document.getElementById('calib-run-all');
+  if(btn)btn.disabled=true;
+  const syms=INSTRUMENTS.filter(i=>i.sym&&i.sym.endsWith('.PA')).map(i=>i.sym);
+  let ok=0,skipped=0,failed=0;
+  for(let i=0;i<syms.length;i++){
+    const s=syms[i];
+    prog.innerHTML=`Calibration ${i+1}/${syms.length} · ${s}`;
+    try{
+      const r=await fetch(WOLF_WORKER.replace(/\/$/,'')+'/backtest?sym='+encodeURIComponent(s),{headers:{'X-Wolf-Token':wolfToken}});
+      if(!r.ok){failed++;continue;}
+      const j=await r.json();
+      if(j.ok&&j.calib)ok++;else if(j.ok&&j.skipped)skipped++;else failed++;
+    }catch(e){failed++;}
+    await new Promise(res=>setTimeout(res,500));
+  }
+  prog.innerHTML=`Terminé : ${ok} calibrés · ${skipped} sans signal exploitable · ${failed} erreurs`;
+  if(btn)btn.disabled=false;
+  renderCalibrations(await fetchCalibrations());
+}
+(function(){
+  const btnAll=document.getElementById('calib-run-all');
+  const btnRef=document.getElementById('calib-refresh');
+  if(btnAll)btnAll.addEventListener('click',runCalibrationAll);
+  if(btnRef)btnRef.addEventListener('click',async()=>{renderCalibrations(await fetchCalibrations());});
+})();
+fetchCalibrations().then(renderCalibrations);
+
 </script>
 </body>
 </html>
