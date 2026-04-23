@@ -107,10 +107,30 @@ export default {
     const path = url.pathname.replace(/\/+$/, '');
     try {
       if (path === '/health' || path === '') {
+        // Inclut un résumé minimal du dernier scan (non sensible) pour
+        // permettre au front d'afficher "dernier scan il y a X min" sans
+        // requérir le token. Les détails (signaux, scan_log) restent gated.
+        let lastScan = null;
+        try {
+          const raw = await env.WOLF_DATA.get('last_scan');
+          if (raw) {
+            const ls = JSON.parse(raw);
+            lastScan = {
+              startedAt: ls.startedAt,
+              status: ls.status,
+              scanned: ls.scanned || 0,
+              new_signals: ls.new_signals || 0,
+              low_volume_skipped: ls.low_volume_skipped || 0,
+              stooq_fallback: ls.stooq_fallback || 0,
+              cac_chg: ls.cac_chg != null ? ls.cac_chg : null,
+            };
+          }
+        } catch (e) {}
         return jsonResponse({
           ok: true, worker: 'wolf-advisor', version: 'v2',
           time: new Date().toISOString(),
           watchlist_size: WATCHLIST.length,
+          last_scan: lastScan,
         });
       }
       if (path.startsWith('/yahoo/')) {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Wolf Advisor v9.1 — PEA Fortuneo</title>
+<title>Wolf Advisor v10 — PEA Fortuneo</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -125,7 +125,7 @@ button:active{transform:scale(.98);}
 <div class="hdr">
   <div class="avatar">🐺</div>
   <div style="flex:1;">
-    <div style="font-size:15px;font-weight:500;">Wolf Advisor <span style="font-size:11px;color:var(--text-tertiary);font-weight:400;">v9.1</span><span class="live-tag" id="live-tag">LIVE</span></div>
+    <div style="font-size:15px;font-weight:500;">Wolf Advisor <span style="font-size:11px;color:var(--text-tertiary);font-weight:400;">v10</span><span class="live-tag" id="live-tag">LIVE</span></div>
     <div style="font-size:11px;color:var(--text-secondary);margin-top:1px;"><span class="dot open" id="market-dot"></span><span id="market-status-line">Chargement...</span></div>
   </div>
   <div style="display:flex;gap:6px;">
@@ -532,7 +532,7 @@ button:active{transform:scale(.98);}
     <button class="qbtn" onclick="askWolf('Analyse mon portefeuille actuel et donne-moi tes recommandations précises')">Analyse portef.</button>
   </div>
   <div class="chat-area" id="chat-area">
-    <div class="mw"><div class="wm">🐺</div><div class="b">Wolf v9.1 — temps réel via Worker Cloudflare, RSI réel, signaux pondérés par volatilité, alertes étendues (RSI, MM50, score, vs CAC). Trades opportunistes ≥600€ avec frais payés, objectif +6% net. Commence par le briefing du jour.</div></div>
+    <div class="mw"><div class="wm">🐺</div><div class="b">Wolf v10 — temps réel via Worker Cloudflare, RSI/Vol/VIX réels, scan mutualisé + fallback Stooq, filtre volume, alertes étendues. Trades opportunistes ≥600€ avec frais payés, objectif +6% net. Commence par le briefing du jour.</div></div>
   </div>
   <div class="input-row">
     <input type="text" id="wolf-input" placeholder="Pose ta question à Wolf..." />
@@ -877,9 +877,12 @@ async function fetchNews(){
   results.forEach(r=>{if(r.status==='fulfilled'&&r.value)merged.push(...r.value);});
 
   if(merged.length>=3){
-    // Dédoublonnage simple sur le titre
+    // Dédoublonnage simple sur le titre + tri chronologique desc (plus récent en premier)
     const seen=new Set();
-    cachedNews=merged.filter(n=>{const k=n.title.toLowerCase().slice(0,50);if(seen.has(k))return false;seen.add(k);return true;}).slice(0,20);
+    cachedNews=merged
+      .filter(n=>{const k=n.title.toLowerCase().slice(0,50);if(seen.has(k))return false;seen.add(k);return true;})
+      .sort((a,b)=>(new Date(b.publishedAt).getTime()||0)-(new Date(a.publishedAt).getTime()||0))
+      .slice(0,20);
     newsLoaded=true;
     renderNews();renderBriefingNews();
     const sources=[...new Set(cachedNews.map(n=>n.source))].join(' · ');
@@ -2162,6 +2165,16 @@ setInterval(updateSignalsPerf,300000);
 let wolfToken='';
 try{wolfToken=localStorage.getItem('wolf_v9_token')||'';}catch(e){}
 
+async function workerFetchHealth(){
+  try{
+    const ctrl=new AbortController();
+    const t=setTimeout(()=>ctrl.abort(),6000);
+    const r=await fetch(WOLF_WORKER.replace(/\/$/,'')+'/health',{signal:ctrl.signal});
+    clearTimeout(t);
+    if(!r.ok)return null;
+    return await r.json();
+  }catch(e){return null;}
+}
 async function workerGetState(){
   if(!WOLF_WORKER)return null;
   try{
@@ -2171,10 +2184,19 @@ async function workerGetState(){
     const t=setTimeout(()=>ctrl.abort(),6000);
     const r=await fetch(WOLF_WORKER.replace(/\/$/,'')+'/state',{headers,signal:ctrl.signal});
     clearTimeout(t);
-    if(r.status===403)return{error:'auth',msg:'token invalide ou manquant'};
-    if(!r.ok)return{error:'http',msg:'HTTP '+r.status};
+    if(r.status===403){
+      const h=await workerFetchHealth();
+      return{error:'auth',msg:'token requis',last_scan:h&&h.last_scan?h.last_scan:null,partial:true};
+    }
+    if(!r.ok){
+      const h=await workerFetchHealth();
+      return{error:'http',msg:'HTTP '+r.status,last_scan:h&&h.last_scan?h.last_scan:null,partial:true};
+    }
     return await r.json();
-  }catch(e){return{error:'net',msg:'inaccessible'};}
+  }catch(e){
+    const h=await workerFetchHealth();
+    return{error:'net',msg:'inaccessible',last_scan:h&&h.last_scan?h.last_scan:null,partial:true};
+  }
 }
 
 function renderLastScan(ls){
@@ -2189,7 +2211,7 @@ function renderWorkerState(s){
   const el=document.getElementById('worker-status');if(!el)return;
   if(!WOLF_WORKER){el.style.display='none';renderLastScan(null);return;}
   el.style.display='block';
-  if(!s||s.error){el.innerHTML='<span style="color:var(--c-red);">●</span> Worker : '+(s?s.msg:'non configuré');renderLastScan(null);return;}
+  if(!s||s.error){el.innerHTML='<span style="color:var(--c-red);">●</span> Worker : '+(s?s.msg:'non configuré');renderLastScan(s&&s.last_scan?s.last_scan:null);return;}
   const ls=s.last_scan;
   renderLastScan(ls);
   if(!ls){el.innerHTML='<span style="color:var(--text-tertiary);">●</span> Worker en attente (aucun scan)';return;}
